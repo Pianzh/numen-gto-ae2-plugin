@@ -2,6 +2,7 @@ package dev.local.numenae2;
 
 import com.dwinovo.numen.api.NumenPlugins;
 import net.minecraftforge.fml.ModList;
+import net.minecraftforge.fml.common.Mod;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,6 +15,7 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Inert unless both {@code numen} and {@code ae2} are loaded.
  */
+@Mod(Ae2Mod.MODID)
 public final class Ae2Mod {
 
     public static final String MODID = "numen_gto_ae2";

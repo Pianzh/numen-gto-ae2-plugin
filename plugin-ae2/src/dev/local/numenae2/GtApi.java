@@ -251,6 +251,7 @@ public final class GtApi {
                     "写成 gt.gt.recipe({output = \"gtceu:stainless_steel_ingot\"})。");
         }
         int limit = args == null || args.limit().isEmpty() ? 12 : Math.max(1, Math.min(40, args.limit().get()));
+        String typeFilter = args == null || args.type_filter().isEmpty() ? "" : args.type_filter().orElse("").trim();
         ServerLevel level = level(call);
         List<RecipeRow> rows = new ArrayList<>();
 
@@ -300,7 +301,11 @@ public final class GtApi {
                         }
                         appendGtInputs(ins, def.itemInputs);
                         appendGtFluids(ins, def.fluidInputs, true);
-                        rows.add(new RecipeRow(entry.getKey().toString(), type.registryName.toString(),
+                        String rowLine = type.registryName.toString();
+                        if (!typeFilter.isEmpty() && !rowLine.contains(typeFilter)) {
+                            continue;
+                        }
+                        rows.add(new RecipeRow(entry.getKey().toString(), rowLine,
                                 outId == null ? output : outId, count, ins.toString()));
                     } catch (Throwable ignored) {
                     }
@@ -320,6 +325,10 @@ public final class GtApi {
                 ResourceLocation rl = ForgeRegistries.ITEMS.getKey(result.m_41720_());
                 String rid = rl == null ? "?" : rl.toString();
                 if (!rid.equals(output)) {
+                    continue;
+                }
+                String type = typeName(r);
+                if (!typeFilter.isEmpty() && !type.contains(typeFilter)) {
                     continue;
                 }
                 StringBuilder ins = new StringBuilder();
@@ -419,6 +428,42 @@ public final class GtApi {
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    public record Types(List<String> types, String line) {
+    }
+
+    @Fn("列出服务器上全部配方类型(GT 的和原版的)以及每个类型有多少条配方。")
+    @Example("gt.gt.types()")
+    @Note("想看某台机器能烧什么,先在这里找它的类型名,再用 recipe 的 type_filter 过滤。")
+    public static Types types(ServerCall call) {
+        java.util.TreeMap<String, Integer> counts = new java.util.TreeMap<>();
+        try {
+            Class<?> reg = Class.forName("com.gregtechceu.gtceu.common.data.GTRecipeTypes");
+            for (java.lang.reflect.Field f : reg.getFields()) {
+                if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())
+                        || !com.gregtechceu.gtceu.api.recipe.GTRecipeType.class.isAssignableFrom(f.getType())) {
+                    continue;
+                }
+                com.gregtechceu.gtceu.api.recipe.GTRecipeType type =
+                        (com.gregtechceu.gtceu.api.recipe.GTRecipeType) f.get(null);
+                if (type != null && type.recipes != null) {
+                    counts.put(type.registryName.toString(), type.recipes.size());
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        for (net.minecraft.world.item.crafting.Recipe<?> r : level(call).m_7654_().m_129894_().m_44051_()) {
+            String t = typeName(r);
+            counts.merge(t, 1, Integer::sum);
+        }
+        List<String> lines = new ArrayList<>();
+        int total = 0;
+        for (var e : counts.entrySet()) {
+            total += e.getValue();
+            lines.add(e.getKey() + " x" + e.getValue());
+        }
+        return new Types(lines, "配方类型 " + counts.size() + " 种、配方共 " + total + " 条");
     }
 
     // ------------------------------------------------------------------ status

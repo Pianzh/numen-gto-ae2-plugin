@@ -73,6 +73,17 @@ public final class GtApi {
         }
     }
 
+    /** The GT machine object a block entity holds (GTM keeps features on MetaMachine, not the BE). */
+    private static Object machineOf(BlockEntity be) {
+        try {
+            if (be instanceof com.gregtechceu.gtceu.api.blockentity.MetaMachineBlockEntity mb) {
+                return mb.getMetaMachine();
+            }
+        } catch (Throwable ignored) {
+        }
+        return be;
+    }
+
     private static long[] euOf(BlockEntity be) {
         try {
             Object cap = ((net.minecraftforge.common.capabilities.ICapabilityProvider) (Object) be)
@@ -91,12 +102,13 @@ public final class GtApi {
 
     private static Status describe(BlockPos pos, BlockEntity be) {
         String id = idOf(be);
+        Object machine = machineOf(be);
         boolean formed = true;
         boolean active = false;
         int progress = -1;
         int maxProgress = -1;
         String kind = "machine";
-        if (be instanceof IMultiController mc) {
+        if (machine instanceof IMultiController mc) {
             kind = "multiblock";
             try {
                 formed = mc.self().isFormed();
@@ -104,7 +116,7 @@ public final class GtApi {
                 formed = false;
             }
         }
-        if (be instanceof IRecipeLogicMachine rm) {
+        if (machine instanceof IRecipeLogicMachine rm) {
             try {
                 IWorkable w = rm.getRecipeLogic();
                 if (w != null) {
@@ -169,7 +181,7 @@ public final class GtApi {
                 LevelChunk chunk = level.m_6325_(cx, cz);
                 for (var entry : chunk.m_62954_().entrySet()) {
                     BlockEntity be = entry.getValue();
-                    if (!(be instanceof IMultiController mc)) {
+                    if (!(machineOf(be) instanceof IMultiController mc)) {
                         continue;
                     }
                     scanned++;
@@ -223,7 +235,7 @@ public final class GtApi {
             throw new ApiError(ErrorKind.NOT_FOUND, coord(pos) + " 处没有方块实体",
                     "坐标写对了吗？多方块控制器在结构边缘上。");
         }
-        if (!(be instanceof IMultiController) && !(be instanceof IRecipeLogicMachine)) {
+        if (!(machineOf(be) instanceof IMultiController) && !(machineOf(be) instanceof IRecipeLogicMachine)) {
             throw new ApiError(ErrorKind.NOT_FOUND, coord(pos) + " 处不是格雷机器：" + idOf(be),
                     "pos 要点多方块控制器或者单方块机器本体。");
         }

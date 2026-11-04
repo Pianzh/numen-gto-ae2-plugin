@@ -219,7 +219,7 @@ public final class GtApi {
 
     // ------------------------------------------------------------------ recipes (all mods)
 
-    public record RecipeOpt(Optional<String> output, Optional<String> type, Optional<Integer> limit) {
+    public record RecipeOpt(Optional<String> output, Optional<String> type_filter, Optional<Integer> limit) {
     }
 
     public record RecipeRow(String recipeId, String category, String output, int count, String inputs) {
@@ -251,7 +251,7 @@ public final class GtApi {
                     "写成 gt.gt.recipe({output = \"gtceu:stainless_steel_ingot\"})。");
         }
         int limit = args == null || args.limit().isEmpty() ? 12 : Math.max(1, Math.min(40, args.limit().get()));
-        String typeFilter = args == null || args.type().isEmpty() ? "" : args.type().orElse("").trim();
+        String typeFilter = args == null || args.type_filter().isEmpty() ? "" : args.type_filter().orElse("").trim();
         ServerLevel level = level(call);
         Collection<net.minecraft.world.item.crafting.Recipe<?>> all = level.m_7654_().m_129894_().m_44051_();
         var registries = level.m_9598_();

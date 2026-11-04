@@ -510,6 +510,202 @@ public final class GtApi {
         return new Types(lines, "配方类型 " + counts.size() + " 种、配方共 " + total + " 条");
     }
 
+    // ------------------------------------------------------------------ uses (search by input)
+
+    public record UsesOpt(Optional<String> input, Optional<Integer> limit, Optional<String> type_filter) {
+    }
+
+    public record Use(String recipeId, String category, String output, int count, String inputs) {
+    }
+
+    public record Uses(List<Use> rows, int matched, String line) {
+    }
+
+    private static String itemLabel(ItemStack stack) {
+        ResourceLocation rl = ForgeRegistries.ITEMS.getKey(stack.m_41720_());
+        return rl == null ? "?" : rl.toString();
+    }
+
+    @Fn("查全服务器所有把某物品当输入的配方(GT 与原版一起),按产物回列。")
+    @Example("gt.gt.uses({input = \"gtceu:stainless_steel_dust\", limit = 30})")
+    @Note("input 是物品 id。type_filter 可按配方类型名过滤。matched 是命中总数,rows 只带前 limit 条。")
+    public static Uses uses(ServerCall call, UsesOpt args) {
+        String input = args == null || args.input().isEmpty() ? "" : args.input().orElse("").trim();
+        if (input.isEmpty()) {
+            throw new ApiError(ErrorKind.BAD_ARGUMENT, "没说查谁的用途",
+                    "写成 gt.gt.uses({input = \"gtceu:stainless_steel_dust\"})。");
+        }
+        int limit = args == null || args.limit().isEmpty() ? 30 : Math.max(1, Math.min(100, args.limit().get()));
+        String typeFilter = args == null || args.type_filter().isEmpty() ? "" : args.type_filter().orElse("").trim();
+        ServerLevel level = level(call);
+        List<Use> rows = new ArrayList<>();
+        int matched = 0;
+
+        // ---- layer 1: GregTech recipe types
+        try {
+            Class<?> reg = Class.forName("com.gregtechceu.gtceu.common.data.GTRecipeTypes");
+            for (java.lang.reflect.Field f : reg.getFields()) {
+                if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())
+                        || !com.gregtechceu.gtceu.api.recipe.GTRecipeType.class.isAssignableFrom(f.getType())) {
+                    continue;
+                }
+                com.gregtechceu.gtceu.api.recipe.GTRecipeType type =
+                        (com.gregtechceu.gtceu.api.recipe.GTRecipeType) f.get(null);
+                if (type == null || type.recipes == null) {
+                    continue;
+                }
+                for (var entry : type.recipes.entrySet()) {
+                    try {
+                        com.gregtechceu.gtceu.api.recipe.GTRecipeDefinition def = entry.getValue();
+                        if (def == null) {
+                            continue;
+                        }
+                        boolean takes = false;
+                        StringBuilder ins = new StringBuilder();
+                        for (Object co : def.itemInputs) {
+                            com.gregtechceu.gtceu.api.recipe.content.Content<?> c =
+                                    (com.gregtechceu.gtceu.api.recipe.content.Content<?>) co;
+                            if (!(c.inner instanceof com.gregtechceu.gtceu.api.recipe.ingredient.ItemIngredient ii)) {
+                                continue;
+                            }
+                            ItemStack[] opts = ii.inner.m_43908_();
+                            if (opts == null) {
+                                continue;
+                            }
+                            for (ItemStack o : opts) {
+                                if (o.m_41619_()) {
+                                    continue;
+                                }
+                                if (ins.length() > 0) {
+                                    ins.append(" + ");
+                                }
+                                String oid = itemLabel(o);
+                                if (oid.equals(input)) {
+                                    takes = true;
+                                }
+                                ins.append(oid).append(" x").append(Math.max(1, c.amount));
+                                break;
+                            }
+                        }
+                        if (!takes) {
+                            continue;
+                        }
+                        String rowLine = type.registryName.toString();
+                        if (!typeFilter.isEmpty() && !rowLine.contains(typeFilter)) {
+                            continue;
+                        }
+                        matched++;
+                        if (rows.size() >= limit) {
+                            continue;
+                        }
+                        appendGtOutputs(ins, def.itemOutputs);
+                        String outId = "";
+                        int outCount = 0;
+                        for (Object co : def.itemOutputs) {
+                            com.gregtechceu.gtceu.api.recipe.content.Content<?> c =
+                                    (com.gregtechceu.gtceu.api.recipe.content.Content<?>) co;
+                            if (c.inner instanceof com.gregtechceu.gtceu.api.recipe.ingredient.ItemIngredient ii) {
+                                ItemStack[] opts = ii.inner.m_43908_();
+                                if (opts != null && opts.length > 0) {
+                                    outId = itemLabel(opts[0]);
+                                    outCount = (int) Math.max(1, c.amount);
+                                    break;
+                                }
+                            }
+                        }
+                        rows.add(new Use(entry.getKey().toString(), rowLine, outId, outCount, ins.toString()));
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // ---- layer 2: vanilla RecipeManager
+        var registries = level.m_9598_();
+        for (net.minecraft.world.item.crafting.Recipe<?> r : level.m_7654_().m_129894_().m_44051_()) {
+            try {
+                boolean takes = false;
+                StringBuilder ins = new StringBuilder();
+                for (var ing : r.m_7527_()) {
+                    if (ing == null) {
+                        continue;
+                    }
+                    ItemStack[] opts = ing.m_43908_();
+                    if (opts == null) {
+                        continue;
+                    }
+                    for (ItemStack o : opts) {
+                        if (o.m_41619_()) {
+                            continue;
+                        }
+                        if (ins.length() > 0) {
+                            ins.append(" | ");
+                        }
+                        String oid = itemLabel(o);
+                        if (oid.equals(input)) {
+                            takes = true;
+                        }
+                        ins.append(oid);
+                        break;
+                    }
+                }
+                if (!takes) {
+                    continue;
+                }
+                ItemStack result = r.m_8043_(registries);
+                if (result == null || result.m_41619_()) {
+                    continue;
+                }
+                String type = typeName(r);
+                if (!typeFilter.isEmpty() && !type.contains(typeFilter)) {
+                    continue;
+                }
+                matched++;
+                if (rows.size() >= limit) {
+                    continue;
+                }
+                rows.add(new Use(r.m_6423_().toString(), type, itemLabel(result), result.m_41613_(), ins.toString()));
+            } catch (Throwable ignored) {
+            }
+        }
+
+        String line;
+        if (matched == 0) {
+            line = "全服务器没有把 " + input + " 当输入的配方";
+        } else {
+            line = "把 " + input + " 当输入的配方共 " + matched + " 条"
+                    + (rows.size() < matched ? "(只列前 " + rows.size() + " 条)" : "");
+        }
+        return new Uses(rows, matched, line);
+    }
+
+    private static void appendGtOutputs(StringBuilder ins, List<?> outputs) {
+        try {
+            for (Object co : outputs) {
+                com.gregtechceu.gtceu.api.recipe.content.Content<?> c =
+                        (com.gregtechceu.gtceu.api.recipe.content.Content<?>) co;
+                if (!(c.inner instanceof com.gregtechceu.gtceu.api.recipe.ingredient.ItemIngredient ii)) {
+                    continue;
+                }
+                ItemStack[] opts = ii.inner.m_43908_();
+                if (opts == null || opts.length == 0) {
+                    continue;
+                }
+                ins.append(" => ");
+                ResourceLocation rl = ForgeRegistries.ITEMS.getKey(opts[0].m_41720_());
+                ins.append(rl == null ? "?" : rl.toString());
+                if (c.amount > 1) {
+                    ins.append(" x").append(c.amount);
+                }
+                if (c.chance != 10000) {
+                    ins.append("(概率").append(c.chance / 100).append("%)");
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     // ------------------------------------------------------------------ status
 
     public record PosOpt(Optional<String> pos) {

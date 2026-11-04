@@ -706,6 +706,339 @@ public final class GtApi {
         }
     }
 
+    // ------------------------------------------------------------------ graph (recipe relations)
+
+    /** One recipe, reduced to item-id adjacency for graph walks. */
+    public static final class REntry {
+        public final String id;
+        public final String category;
+        public final java.util.LinkedHashMap<String, Long> inputs = new java.util.LinkedHashMap<>();
+        public final java.util.LinkedHashMap<String, Long> outputs = new java.util.LinkedHashMap<>();
+
+        REntry(String id, String category) {
+            this.id = id;
+            this.category = category;
+        }
+    }
+
+    private static volatile java.util.List<REntry> GRAPH;
+
+    /** Build (once per server run) the full recipe graph: GT types + everything in the RecipeManager. */
+    private static java.util.List<REntry> graph(ServerLevel level) {
+        java.util.List<REntry> g = GRAPH;
+        if (g != null) {
+            return g;
+        }
+        synchronized (GtApi.class) {
+            if (GRAPH != null) {
+                return GRAPH;
+            }
+            java.util.List<REntry> all = new java.util.ArrayList<>();
+            // GT layer
+            try {
+                Class<?> reg = Class.forName("com.gregtechceu.gtceu.common.data.GTRecipeTypes");
+                for (java.lang.reflect.Field f : reg.getFields()) {
+                    if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())
+                            || !com.gregtechceu.gtceu.api.recipe.GTRecipeType.class.isAssignableFrom(f.getType())) {
+                        continue;
+                    }
+                    com.gregtechceu.gtceu.api.recipe.GTRecipeType type =
+                            (com.gregtechceu.gtceu.api.recipe.GTRecipeType) f.get(null);
+                    if (type == null || type.recipes == null) {
+                        continue;
+                    }
+                    for (var entry : type.recipes.entrySet()) {
+                        try {
+                            REntry re = new REntry(entry.getKey().toString(), type.registryName.toString());
+                            fillGt(re, entry.getValue());
+                            if (!re.inputs.isEmpty() || !re.outputs.isEmpty()) {
+                                all.add(re);
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            // vanilla layer
+            try {
+                var registries = level.m_9598_();
+                for (net.minecraft.world.item.crafting.Recipe<?> r : level.m_7654_().m_129894_().m_44051_()) {
+                    try {
+                        REntry re = new REntry(r.m_6423_().toString(), typeName(r));
+                        ItemStack result = r.m_8043_(registries);
+                        if (result != null && !result.m_41619_()) {
+                            re.outputs.put(itemLabel(result), (long) result.m_41613_());
+                        }
+                        for (var ing : r.m_7527_()) {
+                            if (ing == null) {
+                                continue;
+                            }
+                            ItemStack[] opts = ing.m_43908_();
+                            if (opts != null && opts.length > 0 && !opts[0].m_41619_()) {
+                                re.inputs.put(itemLabel(opts[0]), 1L);
+                            }
+                        }
+                        if (!re.inputs.isEmpty() || !re.outputs.isEmpty()) {
+                            all.add(re);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            GRAPH = all;
+            return all;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void fillGt(REntry re, com.gregtechceu.gtceu.api.recipe.GTRecipeDefinition def) {
+        for (Object co : def.itemInputs) {
+            com.gregtechceu.gtceu.api.recipe.content.Content<?> c =
+                    (com.gregtechceu.gtceu.api.recipe.content.Content<?>) co;
+            if (c.inner instanceof com.gregtechceu.gtceu.api.recipe.ingredient.ItemIngredient ii) {
+                ItemStack[] opts = ii.inner.m_43908_();
+                if (opts != null && opts.length > 0 && !opts[0].m_41619_()) {
+                    re.inputs.put(itemLabel(opts[0]), Math.max(1, c.amount));
+                }
+            }
+        }
+        for (Object co : def.itemOutputs) {
+            com.gregtechceu.gtceu.api.recipe.content.Content<?> c =
+                    (com.gregtechceu.gtceu.api.recipe.content.Content<?>) co;
+            if (c.inner instanceof com.gregtechceu.gtceu.api.recipe.ingredient.ItemIngredient ii) {
+                ItemStack[] opts = ii.inner.m_43908_();
+                if (opts != null && opts.length > 0 && !opts[0].m_41619_()) {
+                    re.outputs.put(itemLabel(opts[0]), Math.max(1, c.amount));
+                }
+            }
+        }
+    }
+
+    private static java.util.Map<String, java.util.List<REntry>> index(java.util.List<REntry> all, boolean byOutput) {
+        java.util.Map<String, java.util.List<REntry>> ix = new java.util.HashMap<>();
+        for (REntry re : all) {
+            var keys = byOutput ? re.outputs.keySet() : re.inputs.keySet();
+            for (String k : keys) {
+                ix.computeIfAbsent(k, x -> new java.util.ArrayList<>()).add(re);
+            }
+        }
+        return ix;
+    }
+
+    public record PathOpt(Optional<String> from, Optional<String> to, Optional<Integer> maxDepth) {
+    }
+
+    public record Step(String recipeId, String category, String inputs, String outputs) {
+    }
+
+    public record Paths(boolean found, int depth, String direction, List<Step> steps, String line) {
+    }
+
+    @Fn("在配方图上找两个物品之间的生产路径:A 能否一步步走到 B(或反向:B 的原料链里有没有 A)。")
+    @Example("gt.gt.path({from = \"gtceu:iron_dust\", to = \"gtceu:stainless_steel_dust\", maxDepth = 4})")
+    @Note("默认从 to 反向找原料链(GT 的中间产物越往上越多,反推更快)。循环产线会被 visited 截断,不会绕死。")
+    public static Paths path(ServerCall call, PathOpt args) {
+        String from = args == null || args.from().isEmpty() ? "" : args.from().orElse("").trim();
+        String to = args == null || args.to().isEmpty() ? "" : args.to().orElse("").trim();
+        if (from.isEmpty() || to.isEmpty()) {
+            throw new ApiError(ErrorKind.BAD_ARGUMENT, "起点终点都要给",
+                    "写成 gt.gt.path({from = \"gtceu:iron_dust\", to = \"gtceu:stainless_steel_dust\"})。");
+        }
+        int maxDepth = args == null || args.maxDepth().isEmpty() ? 4 : Math.max(1, Math.min(8, args.maxDepth().get()));
+        java.util.List<REntry> all = graph(level(call));
+        var usesIx = index(all, false);
+        var makesIx = index(all, true);
+
+        // BFS from `to` backwards along makes-index: which raw inputs can reach `to`.
+        java.util.Map<String, String> prevNode = new java.util.HashMap<>();
+        java.util.Map<String, REntry> prevRecipe = new java.util.HashMap<>();
+        java.util.Set<String> visited = new java.util.HashSet<>();
+        java.util.ArrayDeque<String> queue = new java.util.ArrayDeque<>();
+        queue.add(to);
+        visited.add(to);
+        boolean found = to.equals(from);
+        int depth = 0;
+        while (!queue.isEmpty() && !found && depth < maxDepth) {
+            int size = queue.size();
+            for (int s = 0; s < size && !found; s++) {
+                String cur = queue.poll();
+                for (REntry re : makesIx.getOrDefault(cur, java.util.List.of())) {
+                    for (String nxt : re.inputs.keySet()) {
+                        if (visited.contains(nxt)) {
+                            continue;
+                        }
+                        visited.add(nxt);
+                        prevNode.put(nxt, cur);
+                        prevRecipe.put(nxt, re);
+                        if (nxt.equals(from)) {
+                            found = true;
+                            break;
+                        }
+                        queue.add(nxt);
+                    }
+                    if (found) {
+                        break;
+                    }
+                }
+            }
+            depth++;
+        }
+
+        List<Step> steps = new ArrayList<>();
+        String line;
+        if (!found) {
+            line = "在深度 " + maxDepth + " 内没有找到 " + from + " → " + to + " 的生产路径";
+            return new Paths(false, -1, "backward", steps, line);
+        }
+        // walk back from `from` via prev maps until `to`
+        String cur = from;
+        int guard = 0;
+        while (!cur.equals(to) && guard++ < 64) {
+            REntry re = prevRecipe.get(cur);
+            if (re == null) {
+                break;
+            }
+            StringBuilder ins = new StringBuilder();
+            for (var e : re.inputs.entrySet()) {
+                if (ins.length() > 0) {
+                    ins.append(" + ");
+                }
+                ins.append(e.getKey());
+                if (e.getValue() > 1) {
+                    ins.append(" x").append(e.getValue());
+                }
+            }
+            StringBuilder outs = new StringBuilder();
+            for (var e : re.outputs.entrySet()) {
+                if (outs.length() > 0) {
+                    outs.append(" | ");
+                }
+                outs.append(e.getKey());
+                if (e.getValue() > 1) {
+                    outs.append(" x").append(e.getValue());
+                }
+            }
+            steps.add(new Step(re.id, re.category, ins.toString(), outs.toString()));
+            String prev = prevNode.get(cur);
+            if (prev == null) {
+                break;
+            }
+            cur = prev;
+        }
+        line = "找到路径(" + steps.size() + " 步):" + from + " → " + to;
+        return new Paths(true, steps.size(), "backward", steps, line);
+    }
+
+    public record LoopOpt(Optional<String> item, Optional<Integer> maxDepth) {
+    }
+
+    @Fn("检测某物品是否处在循环产线里:从它出发沿消耗边走,能回到它自己即为环。")
+    @Example("gt.gt.loop({item = \"gtceu:steel_ingot\", maxDepth = 5})")
+    @Note("GT 里循环产线很多(比如钢渣回炉),这条会给出一个具体的环例子。")
+    public static Paths loop(ServerCall call, LoopOpt args) {
+        String item = args == null || args.item().isEmpty() ? "" : args.item().orElse("").trim();
+        if (item.isEmpty()) {
+            throw new ApiError(ErrorKind.BAD_ARGUMENT, "没说查哪个物品",
+                    "写成 gt.gt.loop({item = \"gtceu:steel_ingot\"})。");
+        }
+        int maxDepth = args == null || args.maxDepth().isEmpty() ? 5 : Math.max(1, Math.min(8, args.maxDepth().get()));
+        java.util.List<REntry> all = graph(level(call));
+        var usesIx = index(all, false);
+
+        // DFS with path tracking; a back-edge to a node on the current stack is a loop.
+        java.util.Map<String, String> prevNode = new java.util.HashMap<>();
+        java.util.Map<String, REntry> prevRecipe = new java.util.HashMap<>();
+        java.util.List<String> stack = new java.util.ArrayList<>();
+        java.util.Set<String> onStack = new java.util.HashSet<>();
+        java.util.Set<String> done = new java.util.HashSet<>();
+        List<Step> steps = new ArrayList<>();
+        String hit = null;
+
+        java.util.ArrayDeque<String> queue = new java.util.ArrayDeque<>();
+        queue.add(item);
+        onStack.add(item);
+        stack.add(item);
+        while (!queue.isEmpty() && hit == null) {
+            String cur = queue.poll();
+            for (REntry re : usesIx.getOrDefault(cur, java.util.List.of())) {
+                for (String nxt : re.outputs.keySet()) {
+                    if (nxt.equals(item)) {
+                        prevNode.put(nxt, cur);
+                        prevRecipe.put(nxt, re);
+                        hit = cur;
+                        break;
+                    }
+                    if (done.contains(nxt) || onStack.contains(nxt)) {
+                        continue;
+                    }
+                    done.add(nxt);
+                    onStack.add(nxt);
+                    stack.add(nxt);
+                    prevNode.put(nxt, cur);
+                    prevRecipe.put(nxt, re);
+                    queue.add(nxt);
+                }
+                if (hit != null) {
+                    break;
+                }
+            }
+            if (hit == null) {
+                // pop
+                String popped = stack.remove(stack.size() - 1);
+                onStack.remove(popped);
+                if (stack.size() > maxDepth) {
+                    break;
+                }
+            }
+        }
+
+        List<Step> reversed = new ArrayList<>();
+        if (hit != null) {
+            String cur = item;
+            int guard = 0;
+            while (guard++ < 64) {
+                REntry re = prevRecipe.get(cur);
+                if (re == null) {
+                    break;
+                }
+                StringBuilder ins = new StringBuilder();
+                for (var e : re.inputs.entrySet()) {
+                    if (ins.length() > 0) {
+                        ins.append(" + ");
+                    }
+                    ins.append(e.getKey());
+                    if (e.getValue() > 1) {
+                        ins.append(" x").append(e.getValue());
+                    }
+                }
+                StringBuilder outs = new StringBuilder();
+                for (var e : re.outputs.entrySet()) {
+                    if (outs.length() > 0) {
+                        outs.append(" | ");
+                    }
+                    outs.append(e.getKey());
+                    if (e.getValue() > 1) {
+                        outs.append(" x").append(e.getValue());
+                    }
+                }
+                reversed.add(new Step(re.id, re.category, ins.toString(), outs.toString()));
+                String prev = prevNode.get(cur);
+                if (prev == null || prev.equals(item)) {
+                    break;
+                }
+                cur = prev;
+            }
+            java.util.Collections.reverse(reversed);
+            steps.addAll(reversed);
+        }
+        String line = hit == null
+                ? "深度 " + maxDepth + " 内没有发现经过 " + item + " 的循环产线"
+                : "发现循环产线(共 " + steps.size() + " 步回到 " + item + ")";
+        return new Paths(hit != null, steps.size(), "loop", steps, line);
+    }
+
     // ------------------------------------------------------------------ status
 
     public record PosOpt(Optional<String> pos) {

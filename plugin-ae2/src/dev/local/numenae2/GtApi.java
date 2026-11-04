@@ -1,6 +1,7 @@
 package dev.local.numenae2;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -19,6 +20,7 @@ import com.gregtechceu.gtceu.api.machine.feature.multiblock.IMultiController;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraftforge.common.capabilities.ForgeCapabilities;
@@ -213,6 +215,114 @@ public final class GtApi {
             line = sb.toString();
         }
         return new Multis(out, scanned, line);
+    }
+
+    // ------------------------------------------------------------------ recipes (all mods)
+
+    public record RecipeOpt(Optional<String> output, Optional<String> type, Optional<Integer> limit) {
+    }
+
+    public record RecipeRow(String recipeId, String category, String output, int count, String inputs) {
+    }
+
+    public record Recipes(List<RecipeRow> rows, int matched, String line) {
+    }
+
+    private static String typeName(net.minecraft.world.item.crafting.Recipe<?> r) {
+        try {
+            net.minecraft.world.item.crafting.RecipeType<?> t = r.m_6671_();
+            if (t instanceof com.gregtechceu.gtceu.api.recipe.GTRecipeType gt) {
+                return gt.registryName.toString();
+            }
+            return String.valueOf(t);
+        } catch (Throwable t2) {
+            return "unknown";
+        }
+    }
+
+    @Fn("查全服务器所有 mod 的配方:按产物物品 id 过滤,原版与格雷机器配方一起出。")
+    @Example("gt.gt.recipe({output = \"gtceu:stainless_steel_ingot\"})")
+    @Example("gt.gt.recipe({output = \"gtceu:steel_dust\", limit = 20})")
+    @Note("category 是配方类型的注册名(格雷机器配方都是 gtceu:xxx 这类)。inputs 是输入物品的简列。")
+    public static Recipes recipe(ServerCall call, RecipeOpt args) {
+        String output = args == null || args.output().isEmpty() ? "" : args.output().orElse("").trim();
+        if (output.isEmpty()) {
+            throw new ApiError(ErrorKind.BAD_ARGUMENT, "没说查什么产物",
+                    "写成 gt.gt.recipe({output = \"gtceu:stainless_steel_ingot\"})。");
+        }
+        int limit = args == null || args.limit().isEmpty() ? 12 : Math.max(1, Math.min(40, args.limit().get()));
+        String typeFilter = args == null || args.type().isEmpty() ? "" : args.type().orElse("").trim();
+        ServerLevel level = level(call);
+        Collection<net.minecraft.world.item.crafting.Recipe<?>> all = level.m_7654_().m_129894_().m_44051_();
+        var registries = level.m_9598_();
+        List<RecipeRow> rows = new ArrayList<>();
+        int matched = 0;
+        for (net.minecraft.world.item.crafting.Recipe<?> r : all) {
+            try {
+                ItemStack result = r.m_8043_(registries);
+                if (result == null || result.m_41619_()) {
+                    continue;
+                }
+                ResourceLocation rl = ForgeRegistries.ITEMS.getKey(result.m_41720_());
+                String rid = rl == null ? "?" : rl.toString();
+                if (!rid.equals(output)) {
+                    continue;
+                }
+                matched++;
+                String type = typeName(r);
+                if (!typeFilter.isEmpty() && !type.contains(typeFilter)) {
+                    continue;
+                }
+                StringBuilder ins = new StringBuilder();
+                try {
+                    for (var ing : r.m_7527_()) {
+                        if (ing == null) {
+                            continue;
+                        }
+                        ItemStack[] opts = ing.m_43908_();
+                        if (opts == null || opts.length == 0) {
+                            continue;
+                        }
+                        if (ins.length() > 0) {
+                            ins.append(" | ");
+                        }
+                        int listed = 0;
+                        for (ItemStack o : opts) {
+                            if (o.m_41619_() || listed >= 3) {
+                                break;
+                            }
+                            ResourceLocation orl = ForgeRegistries.ITEMS.getKey(o.m_41720_());
+                            ins.append(orl == null ? o.toString() : orl.toString());
+                            listed++;
+                        }
+                        if (opts.length > 3) {
+                            ins.append("(+").append(opts.length - 3).append(")");
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+                rows.add(new RecipeRow(r.m_6423_().toString(), type, rid, result.m_41613_(), ins.toString()));
+            } catch (Throwable ignored) {
+                // 整合包里一条坏配方只丢它自己
+            }
+        }
+        List<RecipeRow> shown = rows.size() > limit ? rows.subList(0, limit) : rows;
+        String line;
+        if (rows.isEmpty()) {
+            line = "全服务器配方里没有产出 " + output + " 的条目";
+        } else {
+            StringBuilder sb = new StringBuilder("产出 ").append(output).append(" 的配方 ")
+                    .append(rows.size()).append(" 条");
+            if (shown.size() < rows.size()) {
+                sb.append("(只列前 ").append(shown.size()).append(")");
+            }
+            for (RecipeRow row : shown) {
+                sb.append("\n[").append(row.category()).append("] ").append(row.recipeId())
+                        .append(" x").append(row.count()).append(" <= ").append(row.inputs());
+            }
+            line = sb.toString();
+        }
+        return new Recipes(shown, matched, line);
     }
 
     // ------------------------------------------------------------------ status

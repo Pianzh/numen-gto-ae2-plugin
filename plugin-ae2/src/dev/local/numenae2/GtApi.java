@@ -251,13 +251,67 @@ public final class GtApi {
                     "写成 gt.gt.recipe({output = \"gtceu:stainless_steel_ingot\"})。");
         }
         int limit = args == null || args.limit().isEmpty() ? 12 : Math.max(1, Math.min(40, args.limit().get()));
-        String typeFilter = args == null || args.type_filter().isEmpty() ? "" : args.type_filter().orElse("").trim();
         ServerLevel level = level(call);
-        Collection<net.minecraft.world.item.crafting.Recipe<?>> all = level.m_7654_().m_129894_().m_44051_();
-        var registries = level.m_9598_();
         List<RecipeRow> rows = new ArrayList<>();
-        int matched = 0;
-        for (net.minecraft.world.item.crafting.Recipe<?> r : all) {
+
+        // ---- layer 1: GregTech recipe types (they do not live in the vanilla RecipeManager)
+        try {
+            Class<?> reg = Class.forName("com.gregtechceu.gtceu.common.data.GTRecipeTypes");
+            for (java.lang.reflect.Field f : reg.getFields()) {
+                if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())
+                        || !com.gregtechceu.gtceu.api.recipe.GTRecipeType.class.isAssignableFrom(f.getType())) {
+                    continue;
+                }
+                com.gregtechceu.gtceu.api.recipe.GTRecipeType type =
+                        (com.gregtechceu.gtceu.api.recipe.GTRecipeType) f.get(null);
+                if (type == null || type.recipes == null) {
+                    continue;
+                }
+                for (var entry : type.recipes.entrySet()) {
+                    try {
+                        com.gregtechceu.gtceu.api.recipe.GTRecipeDefinition def = entry.getValue();
+                        if (def == null) {
+                            continue;
+                        }
+                        String outId = null;
+                        int count = 0;
+                        StringBuilder ins = new StringBuilder();
+                        boolean hit = false;
+                        for (Object co : def.itemOutputs) {
+                            com.gregtechceu.gtceu.api.recipe.content.Content<?> c =
+                                    (com.gregtechceu.gtceu.api.recipe.content.Content<?>) co;
+                            if (!(c.inner instanceof com.gregtechceu.gtceu.api.recipe.ingredient.ItemIngredient ii)) {
+                                continue;
+                            }
+                            ItemStack[] opts = ii.inner.m_43908_();
+                            if (opts == null || opts.length == 0) {
+                                continue;
+                            }
+                            ResourceLocation rl = ForgeRegistries.ITEMS.getKey(opts[0].m_41720_());
+                            String rid = rl == null ? "?" : rl.toString();
+                            if (rid.equals(output)) {
+                                hit = true;
+                                outId = rid;
+                                count = (int) Math.max(1, c.amount);
+                            }
+                        }
+                        if (!hit) {
+                            continue;
+                        }
+                        appendGtInputs(ins, def.itemInputs);
+                        appendGtFluids(ins, def.fluidInputs, true);
+                        rows.add(new RecipeRow(entry.getKey().toString(), type.registryName.toString(),
+                                outId == null ? output : outId, count, ins.toString()));
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // ---- layer 2: everything registered the vanilla way
+        var registries = level.m_9598_();
+        for (net.minecraft.world.item.crafting.Recipe<?> r : level.m_7654_().m_129894_().m_44051_()) {
             try {
                 ItemStack result = r.m_8043_(registries);
                 if (result == null || result.m_41619_()) {
@@ -268,44 +322,36 @@ public final class GtApi {
                 if (!rid.equals(output)) {
                     continue;
                 }
-                matched++;
-                String type = typeName(r);
-                if (!typeFilter.isEmpty() && !type.contains(typeFilter)) {
-                    continue;
-                }
                 StringBuilder ins = new StringBuilder();
-                try {
-                    for (var ing : r.m_7527_()) {
-                        if (ing == null) {
-                            continue;
-                        }
-                        ItemStack[] opts = ing.m_43908_();
-                        if (opts == null || opts.length == 0) {
-                            continue;
-                        }
-                        if (ins.length() > 0) {
-                            ins.append(" | ");
-                        }
-                        int listed = 0;
-                        for (ItemStack o : opts) {
-                            if (o.m_41619_() || listed >= 3) {
-                                break;
-                            }
-                            ResourceLocation orl = ForgeRegistries.ITEMS.getKey(o.m_41720_());
-                            ins.append(orl == null ? o.toString() : orl.toString());
-                            listed++;
-                        }
-                        if (opts.length > 3) {
-                            ins.append("(+").append(opts.length - 3).append(")");
-                        }
+                for (var ing : r.m_7527_()) {
+                    if (ing == null) {
+                        continue;
                     }
-                } catch (Throwable ignored) {
+                    ItemStack[] opts = ing.m_43908_();
+                    if (opts == null || opts.length == 0) {
+                        continue;
+                    }
+                    if (ins.length() > 0) {
+                        ins.append(" | ");
+                    }
+                    int listed = 0;
+                    for (ItemStack o : opts) {
+                        if (o.m_41619_() || listed >= 3) {
+                            break;
+                        }
+                        ResourceLocation orl = ForgeRegistries.ITEMS.getKey(o.m_41720_());
+                        ins.append(orl == null ? o.toString() : orl.toString());
+                        listed++;
+                    }
+                    if (opts.length > 3) {
+                        ins.append("(+").append(opts.length - 3).append(")");
+                    }
                 }
-                rows.add(new RecipeRow(r.m_6423_().toString(), type, rid, result.m_41613_(), ins.toString()));
+                rows.add(new RecipeRow(r.m_6423_().toString(), typeName(r), rid, result.m_41613_(), ins.toString()));
             } catch (Throwable ignored) {
-                // 整合包里一条坏配方只丢它自己
             }
         }
+
         List<RecipeRow> shown = rows.size() > limit ? rows.subList(0, limit) : rows;
         String line;
         if (rows.isEmpty()) {
@@ -322,7 +368,57 @@ public final class GtApi {
             }
             line = sb.toString();
         }
-        return new Recipes(shown, matched, line);
+        return new Recipes(shown, rows.size(), line);
+    }
+
+    private static void appendGtInputs(StringBuilder ins, List<?> inputs) {
+        try {
+            for (Object co : inputs) {
+                com.gregtechceu.gtceu.api.recipe.content.Content<?> c =
+                        (com.gregtechceu.gtceu.api.recipe.content.Content<?>) co;
+                if (!(c.inner instanceof com.gregtechceu.gtceu.api.recipe.ingredient.ItemIngredient ii)) {
+                    continue;
+                }
+                ItemStack[] opts = ii.inner.m_43908_();
+                if (opts == null || opts.length == 0) {
+                    continue;
+                }
+                if (ins.length() > 0) {
+                    ins.append(" + ");
+                }
+                long amount = c.amount;
+                ResourceLocation rl = ForgeRegistries.ITEMS.getKey(opts[0].m_41720_());
+                ins.append(rl == null ? "?" : rl.toString());
+                if (amount > 1) {
+                    ins.append(" x").append(amount);
+                }
+                if (c.chance != 10000) {
+                    ins.append("(概率").append(c.chance / 100).append("%)");
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void appendGtFluids(StringBuilder ins, List<?> fluids, boolean isInput) {
+        try {
+            for (Object co : fluids) {
+                com.gregtechceu.gtceu.api.recipe.content.Content<?> c =
+                        (com.gregtechceu.gtceu.api.recipe.content.Content<?>) co;
+                if (c.inner == null) {
+                    continue;
+                }
+                String name = String.valueOf(c.inner);
+                if (ins.length() > 0) {
+                    ins.append(isInput ? " + " : " | ");
+                }
+                ins.append(name + " (fluid)");
+                if (c.amount > 0) {
+                    ins.append(" x").append(c.amount);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     // ------------------------------------------------------------------ status

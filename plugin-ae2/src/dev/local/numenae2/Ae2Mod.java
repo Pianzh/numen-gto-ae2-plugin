@@ -32,7 +32,8 @@ public final class Ae2Mod {
         }
         try {
             NumenPlugins.register("ae2", numen -> Ae2Api.install(numen));
-            LOG.warn("[numen_gto_ae2] registered ae2.*");
+            NumenPlugins.register("gt", numen -> GtApi.install(numen));
+            LOG.warn("[numen_gto_ae2] registered ae2.* and gt.*");
         } catch (Throwable t) {
             LOG.error("[numen_gto_ae2] registration failed", t);
         }

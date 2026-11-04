@@ -37,7 +37,7 @@ def build_ae2():
     res = os.path.join(src, "main", "resources")
     if os.path.isdir(res):
         shutil.copytree(res, classes, dirs_exist_ok=True)
-    out = os.path.join(mod, "build", "numen_gto_ae2-1.0.0.jar")
+    out = os.path.join(mod, "build", "numen_gto-1.0.0.jar")
     if os.path.exists(out):
         os.remove(out)
     rc = subprocess.call([os.path.join(JDK25, "jar.exe"), "--create", "--file", out, "-C", classes, "."], cwd=mod)

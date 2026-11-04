@@ -18,7 +18,7 @@ import org.slf4j.LoggerFactory;
 @Mod(Ae2Mod.MODID)
 public final class Ae2Mod {
 
-    public static final String MODID = "numen_gto_ae2";
+    public static final String MODID = "numen_gto";
     public static final String BUILD = "ae2-1-net-view";
 
     private static final Logger LOG = LoggerFactory.getLogger(MODID);
@@ -26,16 +26,16 @@ public final class Ae2Mod {
     public Ae2Mod() {
         boolean hasNumen = ModList.get().isLoaded("numen");
         boolean hasAe2 = ModList.get().isLoaded("ae2");
-        LOG.warn("[numen_gto_ae2] constructed build={} numen={} ae2={}", BUILD, hasNumen, hasAe2);
+        LOG.warn("[numen_gto] constructed build={} numen={} ae2={}", BUILD, hasNumen, hasAe2);
         if (!hasNumen || !hasAe2) {
             return;
         }
         try {
             NumenPlugins.register("ae2", numen -> Ae2Api.install(numen));
             NumenPlugins.register("gt", numen -> GtApi.install(numen));
-            LOG.warn("[numen_gto_ae2] registered ae2.* and gt.*");
+            LOG.warn("[numen_gto] registered ae2.* and gt.*");
         } catch (Throwable t) {
-            LOG.error("[numen_gto_ae2] registration failed", t);
+            LOG.error("[numen_gto] registration failed", t);
         }
     }
 }

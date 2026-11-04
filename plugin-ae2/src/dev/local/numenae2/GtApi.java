@@ -99,7 +99,8 @@ public final class GtApi {
     }
 
     private record Status(String pos, String id, String kind, boolean formed, boolean active,
-                          int progress, int maxProgress, long eu, long maxEu, String line) {
+                          int progress, int maxProgress, long eu, long maxEu, String line,
+                          String recipeTypes, String logicStatus, String idleReason) {
     }
 
     private static Status describe(BlockPos pos, BlockEntity be) {
@@ -110,6 +111,9 @@ public final class GtApi {
         int progress = -1;
         int maxProgress = -1;
         String kind = "machine";
+        String logicStatus = "";
+        String idleReason = "";
+        String recipeTypes = "";
         if (machine instanceof IMultiController mc) {
             kind = "multiblock";
             try {
@@ -120,11 +124,44 @@ public final class GtApi {
         }
         if (machine instanceof IRecipeLogicMachine rm) {
             try {
-                IWorkable w = rm.getRecipeLogic();
-                if (w != null) {
+                var logic = rm.getRecipeLogic();
+                if (logic != null) {
+                    IWorkable w = logic;
                     active = w.isActive();
                     progress = w.getProgress();
                     maxProgress = w.getMaxProgress();
+                    try {
+                        int st = logic.getStatus();
+                        logicStatus = switch (st) {
+                            case 0 -> "IDLE";
+                            case 1 -> "WORKING";
+                            case 2 -> "WAITING";
+                            case 3 -> "SUSPEND";
+                            default -> String.valueOf(st);
+                        };
+                    } catch (Throwable ignored) {
+                    }
+                    try {
+                        var ir = logic.getIdleReason();
+                        if (ir != null) {
+                            idleReason = ir.getString();
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            try {
+                var def = ((com.gregtechceu.gtceu.api.machine.MetaMachine) machine).definition;
+                if (def != null && def.getRecipeTypes() != null) {
+                    StringBuilder tb = new StringBuilder();
+                    for (var t : def.getRecipeTypes()) {
+                        if (tb.length() > 0) {
+                            tb.append(", ");
+                        }
+                        tb.append(t.registryName.toString());
+                    }
+                    recipeTypes = tb.toString();
                 }
             } catch (Throwable ignored) {
             }
@@ -140,10 +177,17 @@ public final class GtApi {
             sb.append(active ? " 运行中 " : " 待机 ");
             sb.append(progress).append("/").append(maxProgress).append(" tick");
         }
+        if (!logicStatus.isEmpty()) {
+            sb.append(" 状态:").append(logicStatus);
+        }
+        if (!idleReason.isEmpty()) {
+            sb.append(" 待机原因:").append(idleReason);
+        }
         if (eu[1] > 0) {
             sb.append(" EU ").append(eu[0]).append("/").append(eu[1]);
         }
-        return new Status(coord(pos), id, kind, formed, active, progress, maxProgress, eu[0], eu[1], sb.toString());
+        return new Status(coord(pos), id, kind, formed, active, progress, maxProgress, eu[0], eu[1], sb.toString(),
+                recipeTypes, logicStatus, idleReason);
     }
 
     private static String coord(BlockPos p) {

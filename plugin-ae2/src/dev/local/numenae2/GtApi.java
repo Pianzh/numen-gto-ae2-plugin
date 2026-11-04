@@ -263,7 +263,7 @@ public final class GtApi {
 
     // ------------------------------------------------------------------ recipes (all mods)
 
-    public record RecipeOpt(Optional<String> output, Optional<String> type_filter, Optional<Integer> limit) {
+    public record RecipeOpt(Optional<String> output, Optional<String> type_filter, Optional<Integer> limit, Optional<String> max_tier) {
     }
 
     public record RecipeRow(String recipeId, String category, String output, int count, String inputs) {
@@ -298,6 +298,7 @@ public final class GtApi {
         String typeFilter = args == null || args.type_filter().isEmpty() ? "" : args.type_filter().orElse("").trim();
         ServerLevel level = level(call);
         List<RecipeRow> rows = new ArrayList<>();
+        int maxTier = args == null || args.max_tier().isEmpty() ? -1 : tierIndex(args.max_tier().orElse(""));
 
         // ---- layer 1: GregTech recipe types (they do not live in the vanilla RecipeManager)
         try {
@@ -316,6 +317,9 @@ public final class GtApi {
                     try {
                         com.gregtechceu.gtceu.api.recipe.GTRecipeDefinition def = entry.getValue();
                         if (def == null) {
+                            continue;
+                        }
+                        if (maxTier >= 0 && def.eut > VTIER[maxTier]) {
                             continue;
                         }
                         String outId = null;
@@ -350,7 +354,8 @@ public final class GtApi {
                             continue;
                         }
                         rows.add(new RecipeRow(entry.getKey().toString(), rowLine,
-                                outId == null ? output : outId, count, ins.toString()));
+                                outId == null ? output : outId, count,
+                                "[" + tierName(def.eut) + "] " + ins.toString()));
                     } catch (Throwable ignored) {
                     }
                 }
@@ -512,7 +517,7 @@ public final class GtApi {
 
     // ------------------------------------------------------------------ uses (search by input)
 
-    public record UsesOpt(Optional<String> input, Optional<Integer> limit, Optional<String> type_filter) {
+    public record UsesOpt(Optional<String> input, Optional<Integer> limit, Optional<String> type_filter, Optional<String> max_tier) {
     }
 
     public record Use(String recipeId, String category, String output, int count, String inputs) {
@@ -537,6 +542,7 @@ public final class GtApi {
         }
         int limit = args == null || args.limit().isEmpty() ? 30 : Math.max(1, Math.min(100, args.limit().get()));
         String typeFilter = args == null || args.type_filter().isEmpty() ? "" : args.type_filter().orElse("").trim();
+        int maxTier = args == null || args.max_tier().isEmpty() ? -1 : tierIndex(args.max_tier().orElse(""));
         ServerLevel level = level(call);
         List<Use> rows = new ArrayList<>();
         int matched = 0;
@@ -558,6 +564,9 @@ public final class GtApi {
                     try {
                         com.gregtechceu.gtceu.api.recipe.GTRecipeDefinition def = entry.getValue();
                         if (def == null) {
+                            continue;
+                        }
+                        if (maxTier >= 0 && def.eut > VTIER[maxTier]) {
                             continue;
                         }
                         boolean takes = false;
@@ -714,11 +723,51 @@ public final class GtApi {
         public final String category;
         public final java.util.LinkedHashMap<String, Long> inputs = new java.util.LinkedHashMap<>();
         public final java.util.LinkedHashMap<String, Long> outputs = new java.util.LinkedHashMap<>();
+        public final long eut;
+        public final int duration;
 
-        REntry(String id, String category) {
+        REntry(String id, String category, long eut, int duration) {
             this.id = id;
             this.category = category;
+            this.eut = eut;
+            this.duration = duration;
         }
+    }
+
+    /** GT voltage ladder (ULV..UXV), matching GTValues.V. */
+    private static final long[] VTIER = {8L, 32L, 128L, 512L, 2048L, 8192L, 32768L, 131072L, 524288L,
+            2097152L, 8388608L, 33554432L, 134217728L};
+    private static final String[] VTIER_NAME = {"ULV", "LV", "MV", "HV", "EV", "IV", "LuV", "ZPM", "UV",
+            "UHV", "UEV", "UIV", "UXV"};
+
+    /** Highest tier whose base voltage fits the recipe's eut (0=ULV, 3=HV, ...). */
+    private static int tierOf(long eut) {
+        if (eut <= 0) {
+            return -1;
+        }
+        for (int i = VTIER.length - 1; i >= 0; i--) {
+            if (eut >= VTIER[i]) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private static String tierName(long eut) {
+        int t = tierOf(eut);
+        return t < 0 ? "无" : VTIER_NAME[t];
+    }
+
+    private static int tierIndex(String name) {
+        if (name == null) {
+            return -1;
+        }
+        for (int i = 0; i < VTIER_NAME.length; i++) {
+            if (VTIER_NAME[i].equalsIgnoreCase(name.trim())) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static volatile java.util.List<REntry> GRAPH;
@@ -749,8 +798,9 @@ public final class GtApi {
                     }
                     for (var entry : type.recipes.entrySet()) {
                         try {
-                            REntry re = new REntry(entry.getKey().toString(), type.registryName.toString());
-                            fillGt(re, entry.getValue());
+                            var qdef = entry.getValue();
+                            REntry re = new REntry(entry.getKey().toString(), type.registryName.toString(), qdef.eut, qdef.duration);
+                            fillGt(re, qdef);
                             if (!re.inputs.isEmpty() || !re.outputs.isEmpty()) {
                                 all.add(re);
                             }
@@ -765,7 +815,7 @@ public final class GtApi {
                 var registries = level.m_9598_();
                 for (net.minecraft.world.item.crafting.Recipe<?> r : level.m_7654_().m_129894_().m_44051_()) {
                     try {
-                        REntry re = new REntry(r.m_6423_().toString(), typeName(r));
+                        REntry re = new REntry(r.m_6423_().toString(), typeName(r), -1, -1);
                         ItemStack result = r.m_8043_(registries);
                         if (result != null && !result.m_41619_()) {
                             re.outputs.put(itemLabel(result), (long) result.m_41613_());
@@ -827,7 +877,7 @@ public final class GtApi {
         return ix;
     }
 
-    public record PathOpt(Optional<String> from, Optional<String> to, Optional<Integer> maxDepth) {
+    public record PathOpt(Optional<String> from, Optional<String> to, Optional<Integer> max_depth, Optional<String> max_tier) {
     }
 
     public record Step(String recipeId, String category, String inputs, String outputs) {
@@ -846,7 +896,8 @@ public final class GtApi {
             throw new ApiError(ErrorKind.BAD_ARGUMENT, "起点终点都要给",
                     "写成 gt.gt.path({from = \"gtceu:iron_dust\", to = \"gtceu:stainless_steel_dust\"})。");
         }
-        int maxDepth = args == null || args.maxDepth().isEmpty() ? 4 : Math.max(1, Math.min(8, args.maxDepth().get()));
+        int maxDepth = args == null || args.max_depth().isEmpty() ? 4 : Math.max(1, Math.min(8, args.max_depth().get()));
+        int maxTier = args == null || args.max_tier().isEmpty() ? -1 : tierIndex(args.max_tier().orElse(""));
         java.util.List<REntry> all = graph(level(call));
         var usesIx = index(all, false);
         var makesIx = index(all, true);
@@ -865,6 +916,9 @@ public final class GtApi {
             for (int s = 0; s < size && !found; s++) {
                 String cur = queue.poll();
                 for (REntry re : makesIx.getOrDefault(cur, java.util.List.of())) {
+                    if (maxTier >= 0 && re.eut > VTIER[maxTier]) {
+                        continue;
+                    }
                     for (String nxt : re.inputs.keySet()) {
                         if (visited.contains(nxt)) {
                             continue;
@@ -936,7 +990,7 @@ public final class GtApi {
 
     @Fn("检测某物品是否处在循环产线里:从它出发沿消耗边走,能回到它自己即为环。")
     @Example("gt.gt.loop({item = \"gtceu:steel_ingot\", maxDepth = 5})")
-    @Note("GT 里循环产线很多(比如钢渣回炉),这条会给出一个具体的环例子。")
+    @Note("GT 里循环产线很多(比如钢渣回炉),这条会给出一个具体的环例子。仅覆盖物品边,流体循环暂不进图。")
     public static Paths loop(ServerCall call, LoopOpt args) {
         String item = args == null || args.item().isEmpty() ? "" : args.item().orElse("").trim();
         if (item.isEmpty()) {
@@ -947,55 +1001,48 @@ public final class GtApi {
         java.util.List<REntry> all = graph(level(call));
         var usesIx = index(all, false);
 
-        // DFS with path tracking; a back-edge to a node on the current stack is a loop.
+        // pure BFS from item along uses-edges; when an edge leads back to item we found a loop
         java.util.Map<String, String> prevNode = new java.util.HashMap<>();
         java.util.Map<String, REntry> prevRecipe = new java.util.HashMap<>();
-        java.util.List<String> stack = new java.util.ArrayList<>();
-        java.util.Set<String> onStack = new java.util.HashSet<>();
-        java.util.Set<String> done = new java.util.HashSet<>();
-        List<Step> steps = new ArrayList<>();
-        String hit = null;
-
+        java.util.Set<String> visited = new java.util.HashSet<>();
         java.util.ArrayDeque<String> queue = new java.util.ArrayDeque<>();
         queue.add(item);
-        onStack.add(item);
-        stack.add(item);
-        while (!queue.isEmpty() && hit == null) {
-            String cur = queue.poll();
-            for (REntry re : usesIx.getOrDefault(cur, java.util.List.of())) {
-                for (String nxt : re.outputs.keySet()) {
-                    if (nxt.equals(item)) {
+        visited.add(item);
+        String hitViaNode = null;
+        REntry hitViaRecipe = null;
+        int depth = 0;
+        while (!queue.isEmpty() && hitViaNode == null && depth < maxDepth) {
+            int size = queue.size();
+            for (int s = 0; s < size && hitViaNode == null; s++) {
+                String cur = queue.poll();
+                for (REntry re : usesIx.getOrDefault(cur, java.util.List.of())) {
+                    for (String nxt : re.outputs.keySet()) {
+                        if (nxt.equals(item)) {
+                            prevNode.put(item, cur);
+                            prevRecipe.put(item, re);
+                            hitViaNode = cur;
+                            hitViaRecipe = re;
+                            break;
+                        }
+                        if (visited.contains(nxt)) {
+                            continue;
+                        }
+                        visited.add(nxt);
                         prevNode.put(nxt, cur);
                         prevRecipe.put(nxt, re);
-                        hit = cur;
+                        queue.add(nxt);
+                    }
+                    if (hitViaNode != null) {
                         break;
                     }
-                    if (done.contains(nxt) || onStack.contains(nxt)) {
-                        continue;
-                    }
-                    done.add(nxt);
-                    onStack.add(nxt);
-                    stack.add(nxt);
-                    prevNode.put(nxt, cur);
-                    prevRecipe.put(nxt, re);
-                    queue.add(nxt);
-                }
-                if (hit != null) {
-                    break;
                 }
             }
-            if (hit == null) {
-                // pop
-                String popped = stack.remove(stack.size() - 1);
-                onStack.remove(popped);
-                if (stack.size() > maxDepth) {
-                    break;
-                }
-            }
+            depth++;
         }
 
-        List<Step> reversed = new ArrayList<>();
-        if (hit != null) {
+        List<Step> steps = new ArrayList<>();
+        if (hitViaNode != null) {
+            // walk from item backwards via prevRecipe until we close the loop, then reverse
             String cur = item;
             int guard = 0;
             while (guard++ < 64) {
@@ -1023,20 +1070,19 @@ public final class GtApi {
                         outs.append(" x").append(e.getValue());
                     }
                 }
-                reversed.add(new Step(re.id, re.category, ins.toString(), outs.toString()));
+                steps.add(new Step(re.id, re.category, ins.toString(), outs.toString()));
                 String prev = prevNode.get(cur);
                 if (prev == null || prev.equals(item)) {
                     break;
                 }
                 cur = prev;
             }
-            java.util.Collections.reverse(reversed);
-            steps.addAll(reversed);
+            java.util.Collections.reverse(steps);
         }
-        String line = hit == null
+        String line = hitViaNode == null
                 ? "深度 " + maxDepth + " 内没有发现经过 " + item + " 的循环产线"
                 : "发现循环产线(共 " + steps.size() + " 步回到 " + item + ")";
-        return new Paths(hit != null, steps.size(), "loop", steps, line);
+        return new Paths(hitViaNode != null, steps.size(), "loop", steps, line);
     }
 
     // ------------------------------------------------------------------ status
